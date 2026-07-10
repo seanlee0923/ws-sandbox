@@ -31,6 +31,7 @@ var clients map[string]*Client
 
 // 고루틴끼리 이거로 넘기자
 var cliCH chan *Client
+var delCh chan string
 
 // 엔트리포인트
 func main() {
@@ -38,9 +39,10 @@ func main() {
 	clients = make(map[string]*Client)
 	// 클라이언트 관리용 채널 init
 	cliCH = make(chan *Client)
+	delCh = make(chan string)
 
 	// 룸 관리용 함수
-	go roomMaker(cliCH)
+	go connectionManager(cliCH, delCh)
 
 	http.HandleFunc("/ws/", upgrade)
 	http.ListenAndServe(":9090", nil)
@@ -99,7 +101,7 @@ func (c *Client) readPump() {
 		if c.Room != nil {
 			c.Room.ExitCh <- c
 		}
-		delete(clients, c.ID)
+		delCh <- c.ID
 	}()
 
 	for {
@@ -147,7 +149,7 @@ func (r *Room) begin() {
 	for {
 		select {
 		case client := <-r.ExitCh:
-			// 클라이언트 퇴장
+			// 클라이언트 나가기
 			if _, ok := r.Clients[client]; ok {
 				delete(r.Clients, client)
 				close(client.SendCh)
@@ -168,27 +170,34 @@ func (r *Room) begin() {
 	}
 }
 
-// 매치메이킹 구현이 귀찮으니까 채널 변수 만들어서 돌리기
-func roomMaker(cliCH chan *Client) {
+// 커넥션 관리하는 함수
+func connectionManager(cliCH chan *Client, delCh chan string) {
 	// 대기용 큐
 	queue := make([]*Client, 0)
-	for c := range cliCH {
-		// 사용자 받으면 큐에 넣자
-		queue = append(queue, c)
+	for {
+		select {
+		case c := <-cliCH:
+			// 사용자 받으면 큐에 넣자
+			queue = append(queue, c)
 
-		// 클라이언트 3개 생성마다
-		if len(clients)%3 == 0 {
-			r := NewRoom(fmt.Sprintf("ROOM-%d", len(clients)))
-			// 대기열에 있는애들 룸에 넣기
-			for _, cli := range queue {
-				r.Clients[cli] = true
+			// 클라이언트 3개 생성마다
+			if len(clients)%3 == 0 {
+				r := NewRoom(fmt.Sprintf("ROOM-%d", len(clients)))
+				// 대기열에 있는애들 룸에 넣기
+				for _, cli := range queue {
+					r.Clients[cli] = true
+				}
+				c.Room = r
+
+				go r.begin()
+				r.BroadCastCh <- []byte("welcome to room " + r.ID)
+				// 대기열 다시 비우기
+				queue = make([]*Client, 0)
 			}
-			c.Room = r
 
-			go r.begin()
-			r.BroadCastCh <- []byte("welcome to room " + r.ID)
-			// 대기열 다시 비우기
-			queue = make([]*Client, 0)
+		case d := <-delCh:
+			delete(clients, d)
 		}
 	}
+
 }
