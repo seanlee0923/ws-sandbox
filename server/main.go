@@ -42,11 +42,8 @@ func main() {
 	// 룸 관리용 함수
 	go roomMaker(cliCH)
 
-	// 서버 고루틴 분리하고 시작
-	go func() {
-		http.HandleFunc("/ws", upgrade)
-		http.ListenAndServe(":9090", nil)
-	}()
+	http.HandleFunc("/ws/", upgrade)
+	http.ListenAndServe(":9090", nil)
 
 }
 
@@ -58,12 +55,14 @@ func upgrade(w http.ResponseWriter, r *http.Request) {
 	// id 비어있으면 거름
 	if id == "" {
 		w.WriteHeader(401)
+		log.Print("id required")
 		return
 	}
 
 	// 중복접속 막기
 	if _, ok := clients[id]; ok {
 		w.WriteHeader(401)
+		log.Print("aleady exist")
 		return
 	}
 
@@ -71,6 +70,7 @@ func upgrade(w http.ResponseWriter, r *http.Request) {
 	conn, err := new(websocket.Upgrader).Upgrade(w, r, nil)
 	if err != nil {
 		w.WriteHeader(500)
+		log.Print(err)
 		return
 	}
 
@@ -95,6 +95,12 @@ func upgrade(w http.ResponseWriter, r *http.Request) {
 // 기본 read pump
 func (c *Client) readPump() {
 	defer c.Conn.Close()
+	defer func() {
+		if c.Room != nil {
+			c.Room.ExitCh <- c
+		}
+		delete(clients, c.ID)
+	}()
 
 	for {
 
@@ -177,6 +183,7 @@ func roomMaker(cliCH chan *Client) {
 			for _, cli := range queue {
 				r.Clients[cli] = true
 			}
+			c.Room = r
 
 			go r.begin()
 			r.BroadCastCh <- []byte("welcome to room " + r.ID)
